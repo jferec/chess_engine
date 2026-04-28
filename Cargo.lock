@@ -614,8 +614,7 @@ dependencies = [
 name = "chess"
 version = "0.1.0"
 dependencies = [
- "eframe",
- "engine",
+ "ui",
 ]
 
 [[package]]
@@ -3113,6 +3112,14 @@ dependencies = [
  "memoffset",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ui"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "engine",
 ]
 
 [[package]]

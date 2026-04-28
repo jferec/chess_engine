@@ -3,6 +3,10 @@ name = "chess"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = [".", "engine", "ui"]
+exclude = ["engine/move_generator"]
+resolver = "3"
+
 [dependencies]
-eframe = "0.31"
-engine = { path = "engine" }
+ui = { path = "ui" }
