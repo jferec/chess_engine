@@ -5,7 +5,6 @@ edition = "2024"
 
 [workspace]
 members = [".", "engine", "ui"]
-exclude = ["engine/move_generator"]
 resolver = "3"
 
 [dependencies]
