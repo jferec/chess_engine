@@ -2,11 +2,11 @@ use crate::board::*;
 use std::ops::RangeInclusive;
 
 pub trait MoveGenerator {
-    fn generate_moves(&self, turn: Color) -> Vec<Move>;
+    fn generate_moves(&self, turn: Color) -> (Vec<Move>, KingSafety);
 }
 
 impl MoveGenerator for Board {
-    fn generate_moves(&self, turn: Color) -> Vec<Move> {
+    fn generate_moves(&self, turn: Color) -> (Vec<Move>, KingSafety) {
         let mut moves: Vec<Move> = vec![];
         let squares = self.get_pieces(turn);
         for square in squares {
@@ -74,8 +74,7 @@ impl Board {
         })
     }
 
-    fn generate_moves_for_piece(&self, request: &GenerateMovesRequest) -> Vec<Move> {
-        let mut moves: Vec<Move> = vec![];
+    fn generate_moves_for_piece(&self, request: &GenerateMovesRequest,  moves: &mut Vec<Move>, king_safety: &KingSafety) {
         match request.piece.kind {
             PieceKind::Pawn => {
                 self.generate_moves_for_pawn(&mut moves, request.square, request.piece.color)
@@ -95,8 +94,6 @@ impl Board {
             PieceKind::King => {
                 self.generate_moves_for_king(&mut moves, request.square, request.piece.color);
             }
-        }
-        moves
     }
 
     /// add check against King pin

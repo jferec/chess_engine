@@ -1,6 +1,13 @@
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Result;
+use std::ops::BitAnd;
+use std::ops::BitAndAssign;
+use std::ops::BitOr;
+use std::ops::BitOrAssign;
+use std::ops::BitXor;
+use std::ops::BitXorAssign;
 use std::vec;
 
 pub static MIN_LINK: usize = 0;
@@ -204,6 +211,96 @@ impl From<Square> for usize {
         square.index() as usize
     }
 }
+
+/// Bitboard representation
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BitBoard(pub u64);
+
+impl BitBoard {
+    pub fn from_square(square: Square) -> Self {
+        Self(1u64 << square.index())
+    }
+
+    /// Convert a `BitBoard` to a `Square`.  This grabs the least-significant `Square`
+    pub fn to_square(&self) -> Square {
+        unsafe { Square::from_index(self.0.trailing_zeros() as usize) }
+    }
+}
+
+impl BitXor for BitBoard {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        BitBoard(self.0 ^ rhs.0)
+    }
+}
+
+impl BitXorAssign for BitBoard {
+    fn bitxor_assign(&mut self, rhs: Self) {
+        self.0 ^= rhs.0
+    }
+}
+
+impl BitAnd for BitBoard {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        BitBoard(self.0 & rhs.0)
+    }
+}
+
+impl BitAndAssign for BitBoard {
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 ^= rhs.0
+    }
+}
+
+impl BitOr for BitBoard {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        BitBoard(self.0 | rhs.0)
+    }
+}
+
+impl BitOrAssign for BitBoard {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0
+    }
+}
+
+/// For the `BitBoard`, iterate over every `Square` set.
+impl Iterator for BitBoard {
+    type Item = Square;
+
+    #[inline]
+    fn next(&mut self) -> Option<Square> {
+        if self.0 == 0 {
+            None
+        } else {
+            let r = self.to_square();
+            *self ^= BitBoard::from_square(r);
+            Some(r)
+        }
+    }
+}
+
+/// king          = king position
+/// checkers      = enemy pieces checking our king
+/// pinned        = our pieces pinned to our king
+/// pin_ray[from] = squares a pinned piece is allowed to move to. only for pinned
+/// danger        = squares attacked by the enemy, for king moves
+/// evasion_mask  = squares that can block/capture a single check
+pub struct KingSafety {
+    color: Color,
+    king: Square,
+    checkers: BitBoard,
+    pinned: BitBoard,
+    pin_ray: HashMap<Square, BitBoard>,
+    danger: BitBoard,
+    evation_mask: BitBoard
+}
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PieceKind {
