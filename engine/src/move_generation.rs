@@ -1,5 +1,5 @@
 use crate::board::*;
-use std::ops::RangeInclusive;
+use std::{collections::HashMap, ops::RangeInclusive};
 
 pub trait MoveGenerator {
     fn generate_moves(&self, turn: Color) -> (Vec<Move>, KingSafety);
@@ -9,16 +9,35 @@ impl MoveGenerator for Board {
     fn generate_moves(&self, turn: Color) -> (Vec<Move>, KingSafety) {
         let mut moves: Vec<Move> = vec![];
         let squares = self.get_pieces(turn);
+        let king_safety = self.compute_king_safety(turn);
         for square in squares {
             let piece = self
                 .piece_at_square(square)
                 .expect("Piece must be present.");
-            moves.extend(self.generate_moves_for_piece(&GenerateMovesRequest {
-                piece: piece,
-                square,
-            }));
+            self.generate_moves_for_piece(
+                &GenerateMovesRequest {
+                    piece: piece,
+                    square,
+                },
+                &mut moves,
+                &king_safety,
+            );
         }
-        moves
+        (moves, king_safety)
+    }
+}
+
+impl Board {
+    fn compute_king_safety(&self, color: Color) -> KingSafety {
+        KingSafety {
+            color: color,
+            king: Square::A1,
+            checkers: BitBoard(0),
+            pinned: BitBoard(0),
+            pin_ray: HashMap::new(),
+            danger: BitBoard(0),
+            evation_mask: BitBoard(0),
+        }
     }
 }
 
@@ -74,26 +93,32 @@ impl Board {
         })
     }
 
-    fn generate_moves_for_piece(&self, request: &GenerateMovesRequest,  moves: &mut Vec<Move>, king_safety: &KingSafety) {
+    fn generate_moves_for_piece(
+        &self,
+        request: &GenerateMovesRequest,
+        moves: &mut Vec<Move>,
+        king_safety: &KingSafety,
+    ) {
         match request.piece.kind {
             PieceKind::Pawn => {
-                self.generate_moves_for_pawn(&mut moves, request.square, request.piece.color)
+                self.generate_moves_for_pawn(moves, request.square, request.piece.color)
             }
             PieceKind::Bishop => {
-                self.generate_moves_for_bishop(&mut moves, request.square, request.piece.color)
+                self.generate_moves_for_bishop(moves, request.square, request.piece.color)
             }
             PieceKind::Knight => {
-                self.generate_moves_for_knight(&mut moves, request.square, request.piece.color)
+                self.generate_moves_for_knight(moves, request.square, request.piece.color)
             }
             PieceKind::Rook => {
-                self.generate_moves_for_rook(&mut moves, request.square, request.piece.color);
+                self.generate_moves_for_rook(moves, request.square, request.piece.color);
             }
             PieceKind::Queen => {
-                self.generate_moves_for_queen(&mut moves, request.square, request.piece.color);
+                self.generate_moves_for_queen(moves, request.square, request.piece.color);
             }
             PieceKind::King => {
-                self.generate_moves_for_king(&mut moves, request.square, request.piece.color);
+                self.generate_moves_for_king(moves, request.square, request.piece.color);
             }
+        }
     }
 
     /// add check against King pin
@@ -580,7 +605,7 @@ fn test_pawn_move_generation() {
 #[test]
 fn test_initial_moves_for_white() {
     let board: Board = Board::new();
-    let result = board.generate_moves(Color::White);
+    let (result, _) = board.generate_moves(Color::White);
     let expected = vec![
         Move {
             piece: Piece {
@@ -848,7 +873,7 @@ fn test_simple_game() {
     ];
 
     for (ply, (from, to, expected_fen)) in game.into_iter().enumerate() {
-        let generated = board.generate_moves(board.turn());
+        let (generated, _) = board.generate_moves(board.turn());
         let selected = generated
             .into_iter()
             .find(|m| m.from == from && m.to == to)
@@ -880,8 +905,8 @@ fn find_generated_move(
     to: Square,
     promotion: Option<PieceKind>,
 ) -> Move {
-    board
-        .generate_moves(board.turn())
+    let (generated, _) = board.generate_moves(board.turn());
+    generated
         .into_iter()
         .find(|m| {
             m.from == from
@@ -906,6 +931,398 @@ fn find_generated_move(
 #[cfg(test)]
 fn place_test_piece(board: &mut Board, square: Square, kind: PieceKind, color: Color) {
     board.set_piece_at_square(square, Piece { kind, color });
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct AttackStateCase {
+    attacker: Piece,
+    attacker_square: Square,
+    attacker_king_square: Option<Square>,
+    defender_king_square: Square,
+}
+
+#[cfg(test)]
+fn assert_attack_state(case: AttackStateCase) {
+    let defender = case.attacker.color.enemy_color();
+    let mut board = Board::new_empty_board();
+
+    place_test_piece(
+        &mut board,
+        case.defender_king_square,
+        PieceKind::King,
+        defender,
+    );
+    place_test_piece(
+        &mut board,
+        case.attacker_square,
+        case.attacker.kind,
+        case.attacker.color,
+    );
+    if let Some(attacker_king_square) = case.attacker_king_square {
+        place_test_piece(
+            &mut board,
+            attacker_king_square,
+            PieceKind::King,
+            case.attacker.color,
+        );
+    }
+
+    let (_, king_safety) = board.generate_moves(defender);
+
+    assert_eq!(king_safety.color, defender);
+    assert_eq!(king_safety.king, case.defender_king_square);
+    assert_eq!(
+        king_safety.checkers,
+        BitBoard::from_square(case.attacker_square),
+        "expected {:?} {:?} on {:?} to check {:?} king on {:?}",
+        case.attacker.color,
+        case.attacker.kind,
+        case.attacker_square,
+        defender,
+        case.defender_king_square,
+    );
+    assert_eq!(
+        king_safety.danger & BitBoard::from_square(case.defender_king_square),
+        BitBoard::from_square(case.defender_king_square),
+        "expected {:?} king on {:?} to be in danger from {:?} {:?} on {:?}",
+        defender,
+        case.defender_king_square,
+        case.attacker.color,
+        case.attacker.kind,
+        case.attacker_square,
+    );
+}
+
+#[cfg(test)]
+fn assert_attack_states(cases: [AttackStateCase; 3]) {
+    for case in cases {
+        assert_attack_state(case);
+    }
+}
+
+#[cfg(test)]
+fn attack_case(
+    attacker_color: Color,
+    attacker_kind: PieceKind,
+    attacker_square: Square,
+    attacker_king_square: Square,
+    defender_king_square: Square,
+) -> AttackStateCase {
+    AttackStateCase {
+        attacker: Piece {
+            kind: attacker_kind,
+            color: attacker_color,
+        },
+        attacker_square,
+        attacker_king_square: Some(attacker_king_square),
+        defender_king_square,
+    }
+}
+
+#[cfg(test)]
+fn king_attack_case(
+    attacker_color: Color,
+    attacker_square: Square,
+    defender_king_square: Square,
+) -> AttackStateCase {
+    AttackStateCase {
+        attacker: Piece {
+            kind: PieceKind::King,
+            color: attacker_color,
+        },
+        attacker_square,
+        attacker_king_square: None,
+        defender_king_square,
+    }
+}
+
+#[test]
+fn test_white_pawn_attack_state_examples() {
+    assert_attack_states([
+        attack_case(
+            Color::White,
+            PieceKind::Pawn,
+            Square::C4,
+            Square::H1,
+            Square::B5,
+        ),
+        attack_case(
+            Color::White,
+            PieceKind::Pawn,
+            Square::F2,
+            Square::A1,
+            Square::G3,
+        ),
+        attack_case(
+            Color::White,
+            PieceKind::Pawn,
+            Square::G6,
+            Square::A1,
+            Square::H7,
+        ),
+    ]);
+}
+
+#[test]
+fn test_black_pawn_attack_state_examples() {
+    assert_attack_states([
+        attack_case(
+            Color::Black,
+            PieceKind::Pawn,
+            Square::C5,
+            Square::H8,
+            Square::B4,
+        ),
+        attack_case(
+            Color::Black,
+            PieceKind::Pawn,
+            Square::F7,
+            Square::A8,
+            Square::G6,
+        ),
+        attack_case(
+            Color::Black,
+            PieceKind::Pawn,
+            Square::B3,
+            Square::H8,
+            Square::C2,
+        ),
+    ]);
+}
+
+#[test]
+fn test_white_knight_attack_state_examples() {
+    assert_attack_states([
+        attack_case(
+            Color::White,
+            PieceKind::Knight,
+            Square::D4,
+            Square::A1,
+            Square::F5,
+        ),
+        attack_case(
+            Color::White,
+            PieceKind::Knight,
+            Square::B1,
+            Square::H1,
+            Square::C3,
+        ),
+        attack_case(
+            Color::White,
+            PieceKind::Knight,
+            Square::G6,
+            Square::A1,
+            Square::E7,
+        ),
+    ]);
+}
+
+#[test]
+fn test_black_knight_attack_state_examples() {
+    assert_attack_states([
+        attack_case(
+            Color::Black,
+            PieceKind::Knight,
+            Square::E5,
+            Square::H8,
+            Square::F3,
+        ),
+        attack_case(
+            Color::Black,
+            PieceKind::Knight,
+            Square::A7,
+            Square::H8,
+            Square::B5,
+        ),
+        attack_case(
+            Color::Black,
+            PieceKind::Knight,
+            Square::H2,
+            Square::A8,
+            Square::F1,
+        ),
+    ]);
+}
+
+#[test]
+fn test_white_bishop_attack_state_examples() {
+    assert_attack_states([
+        attack_case(
+            Color::White,
+            PieceKind::Bishop,
+            Square::C1,
+            Square::H1,
+            Square::H6,
+        ),
+        attack_case(
+            Color::White,
+            PieceKind::Bishop,
+            Square::F4,
+            Square::A1,
+            Square::B8,
+        ),
+        attack_case(
+            Color::White,
+            PieceKind::Bishop,
+            Square::G2,
+            Square::A1,
+            Square::B7,
+        ),
+    ]);
+}
+
+#[test]
+fn test_black_bishop_attack_state_examples() {
+    assert_attack_states([
+        attack_case(
+            Color::Black,
+            PieceKind::Bishop,
+            Square::C8,
+            Square::H8,
+            Square::H3,
+        ),
+        attack_case(
+            Color::Black,
+            PieceKind::Bishop,
+            Square::A7,
+            Square::H8,
+            Square::D4,
+        ),
+        attack_case(
+            Color::Black,
+            PieceKind::Bishop,
+            Square::F6,
+            Square::A8,
+            Square::B2,
+        ),
+    ]);
+}
+
+#[test]
+fn test_white_rook_attack_state_examples() {
+    assert_attack_states([
+        attack_case(
+            Color::White,
+            PieceKind::Rook,
+            Square::A1,
+            Square::H1,
+            Square::A8,
+        ),
+        attack_case(
+            Color::White,
+            PieceKind::Rook,
+            Square::D4,
+            Square::A1,
+            Square::H4,
+        ),
+        attack_case(
+            Color::White,
+            PieceKind::Rook,
+            Square::F6,
+            Square::A1,
+            Square::F2,
+        ),
+    ]);
+}
+
+#[test]
+fn test_black_rook_attack_state_examples() {
+    assert_attack_states([
+        attack_case(
+            Color::Black,
+            PieceKind::Rook,
+            Square::H8,
+            Square::A8,
+            Square::H1,
+        ),
+        attack_case(
+            Color::Black,
+            PieceKind::Rook,
+            Square::E5,
+            Square::H8,
+            Square::B5,
+        ),
+        attack_case(
+            Color::Black,
+            PieceKind::Rook,
+            Square::C6,
+            Square::H8,
+            Square::C2,
+        ),
+    ]);
+}
+
+#[test]
+fn test_white_queen_attack_state_examples() {
+    assert_attack_states([
+        attack_case(
+            Color::White,
+            PieceKind::Queen,
+            Square::D1,
+            Square::H1,
+            Square::D8,
+        ),
+        attack_case(
+            Color::White,
+            PieceKind::Queen,
+            Square::C4,
+            Square::A1,
+            Square::H4,
+        ),
+        attack_case(
+            Color::White,
+            PieceKind::Queen,
+            Square::B2,
+            Square::H1,
+            Square::G7,
+        ),
+    ]);
+}
+
+#[test]
+fn test_black_queen_attack_state_examples() {
+    assert_attack_states([
+        attack_case(
+            Color::Black,
+            PieceKind::Queen,
+            Square::D8,
+            Square::H8,
+            Square::D1,
+        ),
+        attack_case(
+            Color::Black,
+            PieceKind::Queen,
+            Square::F5,
+            Square::H8,
+            Square::A5,
+        ),
+        attack_case(
+            Color::Black,
+            PieceKind::Queen,
+            Square::G7,
+            Square::A8,
+            Square::B2,
+        ),
+    ]);
+}
+
+#[test]
+fn test_white_king_attack_state_examples() {
+    assert_attack_states([
+        king_attack_case(Color::White, Square::D4, Square::E5),
+        king_attack_case(Color::White, Square::A1, Square::A2),
+        king_attack_case(Color::White, Square::H8, Square::G7),
+    ]);
+}
+
+#[test]
+fn test_black_king_attack_state_examples() {
+    assert_attack_states([
+        king_attack_case(Color::Black, Square::E5, Square::D4),
+        king_attack_case(Color::Black, Square::H1, Square::G1),
+        king_attack_case(Color::Black, Square::A8, Square::B7),
+    ]);
 }
 
 #[cfg(test)]
@@ -1139,7 +1556,7 @@ fn test_promotion_generates_all_quiet_choices() {
     let mut board = Board::new_empty_board();
     place_test_piece(&mut board, Square::D7, PieceKind::Pawn, Color::White);
 
-    let generated = board.generate_moves(Color::White);
+    let (generated, _) = board.generate_moves(Color::White);
     let expected = vec![
         Move {
             piece: Piece {
@@ -1201,7 +1618,7 @@ fn test_promotion_generates_all_left_capture_choices() {
     place_test_piece(&mut board, Square::D8, PieceKind::Rook, Color::White);
     place_test_piece(&mut board, Square::C8, PieceKind::Bishop, Color::Black);
 
-    let generated = board.generate_moves(Color::White);
+    let (generated, _) = board.generate_moves(Color::White);
     let left_capture_promotions: Vec<Move> = generated
         .into_iter()
         .filter(|m| m.from == Square::D7 && m.to == Square::C8)
@@ -1280,7 +1697,7 @@ fn test_promotion_generates_all_right_capture_choices() {
     place_test_piece(&mut board, Square::D8, PieceKind::Rook, Color::White);
     place_test_piece(&mut board, Square::E8, PieceKind::Rook, Color::Black);
 
-    let generated = board.generate_moves(Color::White);
+    let (generated, _) = board.generate_moves(Color::White);
     let right_capture_promotions: Vec<Move> = generated
         .into_iter()
         .filter(|m| m.from == Square::D7 && m.to == Square::E8)
@@ -1453,7 +1870,7 @@ fn test_castling_round_trip_white_king_side() {
     let mut board = castling_test_board();
 
     let original_fen = board.serialize_to_fen();
-    let generated = board.generate_moves(Color::White);
+    let (generated, _) = board.generate_moves(Color::White);
     let castle = generated
         .into_iter()
         .find(|m| m.from == Square::E1 && m.to == Square::G1)
@@ -1470,7 +1887,7 @@ fn test_castling_round_trip_white_queen_side() {
     let mut board = castling_test_board();
 
     let original_fen = board.serialize_to_fen();
-    let generated = board.generate_moves(Color::White);
+    let (generated, _) = board.generate_moves(Color::White);
     let castle = generated
         .into_iter()
         .find(|m| m.from == Square::E1 && m.to == Square::C1)
@@ -1487,7 +1904,7 @@ fn test_castling_round_trip_black_king_side() {
     let mut board = castling_test_board_black_to_move();
 
     let original_fen = board.serialize_to_fen();
-    let generated = board.generate_moves(Color::Black);
+    let (generated, _) = board.generate_moves(Color::Black);
     let castle = generated
         .into_iter()
         .find(|m| m.from == Square::E8 && m.to == Square::G8)
@@ -1504,7 +1921,7 @@ fn test_castling_round_trip_black_queen_side() {
     let mut board = castling_test_board_black_to_move();
 
     let original_fen = board.serialize_to_fen();
-    let generated = board.generate_moves(Color::Black);
+    let (generated, _) = board.generate_moves(Color::Black);
     let castle = generated
         .into_iter()
         .find(|m| m.from == Square::E8 && m.to == Square::C8)

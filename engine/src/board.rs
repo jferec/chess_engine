@@ -214,7 +214,7 @@ impl From<Square> for usize {
 
 /// Bitboard representation
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct BitBoard(pub u64);
+pub struct BitBoard(pub u64);
 
 impl BitBoard {
     pub fn from_square(square: Square) -> Self {
@@ -291,16 +291,16 @@ impl Iterator for BitBoard {
 /// pin_ray[from] = squares a pinned piece is allowed to move to. only for pinned
 /// danger        = squares attacked by the enemy, for king moves
 /// evasion_mask  = squares that can block/capture a single check
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KingSafety {
-    color: Color,
-    king: Square,
-    checkers: BitBoard,
-    pinned: BitBoard,
-    pin_ray: HashMap<Square, BitBoard>,
-    danger: BitBoard,
-    evation_mask: BitBoard
+    pub color: Color,
+    pub king: Square,
+    pub checkers: BitBoard,
+    pub pinned: BitBoard,
+    pub pin_ray: HashMap<Square, BitBoard>,
+    pub danger: BitBoard,
+    pub evation_mask: BitBoard,
 }
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PieceKind {

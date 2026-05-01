@@ -1,9 +1,8 @@
-use board::*;
-use move_generation::*;
+use crate::board::*;
 
 ///
 /// Takes a board state and evaluates the position state
-/// 
+///
 fn evaluate_position(board: &Board) {
     //todo
 }
