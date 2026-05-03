@@ -1,18 +1,24 @@
 use crate::board::*;
-use std::{collections::HashMap, ops::RangeInclusive};
+use std::{
+    collections::HashMap,
+    ops::{Range, RangeInclusive},
+};
+
+pub static FILE_RANGE: Range<isize> = 0..8;
+pub static RANK_RANGE: Range<isize> = 0..8;
 
 pub trait MoveGenerator {
-    fn generate_moves(&self, turn: Color) -> (Vec<Move>, KingSafety);
+    fn generate_moves(&self, turn: Color) -> Vec<Move>;
 }
 
 impl MoveGenerator for Board {
-    fn generate_moves(&self, turn: Color) -> (Vec<Move>, KingSafety) {
+    fn generate_moves(&self, turn: Color) -> Vec<Move> {
         let mut moves: Vec<Move> = vec![];
-        let squares = self.get_pieces(turn);
         let king_safety = self.compute_king_safety(turn);
-        for square in squares {
+        let friendly_pieces = self.get_pieces(turn);
+        for square in friendly_pieces {
             let piece = self
-                .piece_at_square(square)
+                .maybe_piece_at_square(square)
                 .expect("Piece must be present.");
             self.generate_moves_for_piece(
                 &GenerateMovesRequest {
@@ -23,21 +29,159 @@ impl MoveGenerator for Board {
                 &king_safety,
             );
         }
-        (moves, king_safety)
+        moves
     }
+}
+
+/// king          = king position
+/// checkers      = enemy pieces checking our king
+/// danger        = squares attacked by the enemy, for king moves
+/// evation_mask  = squares that can block/capture a single check (for non-king moves)
+struct CheckStatus {
+    king: Square,
+    checkers: BitBoard,
+    danger: BitBoard,
+    evation_mask: BitBoard,
+}
+
+struct PinStatus {
+    pinned: BitBoard,
+    pin_ray: HashMap<Square, BitBoard>,
 }
 
 impl Board {
     fn compute_king_safety(&self, color: Color) -> KingSafety {
+        let check_status = self.compute_check_status(color);
+
         KingSafety {
             color: color,
-            king: Square::A1,
-            checkers: BitBoard(0),
+            king: check_status.king,
+            checkers: check_status.checkers,
             pinned: BitBoard(0),
             pin_ray: HashMap::new(),
-            danger: BitBoard(0),
-            evation_mask: BitBoard(0),
+            danger: check_status.danger,
+            evation_mask: check_status.evation_mask,
         }
+    }
+
+    fn compute_check_status(&self, color: Color) -> CheckStatus {
+        let king = self.find_king(color);
+        let enemy_color = color.enemy_color();
+        let enemies = self.get_pieces(enemy_color);
+        let mut check_status = CheckStatus {
+            king: king,
+            checkers: BitBoard::new(),
+            danger: BitBoard::new(),
+            evation_mask: BitBoard::new(),
+        };
+        for square in enemies {
+            let piece = self.piece_at_square(square);
+            match piece.kind {
+                PieceKind::Pawn => {
+                    let att_dir = enemy_color.pawn_direction();
+                    let attacks: [(isize, isize); 2] = [(att_dir, -1), (att_dir, 1)];
+                    for attack in &attacks {
+                        let rank = square.rank() as isize + attack.0;
+                        let file = square.file() as isize + attack.1;
+                        if RANK_RANGE.contains(&rank) && FILE_RANGE.contains(&file) {
+                            let attacked_field =
+                                BitBoard::from_rank_file(rank as usize, file as usize);
+                            check_status.danger |= attacked_field;
+                            if attacked_field.has_square(king) {
+                                check_status.checkers |= BitBoard::from_square(square);
+                                check_status.evation_mask |= BitBoard::from_square(square);
+                            }
+                        }
+                    }
+                }
+                PieceKind::Knight => {
+                    let attacks: [(isize, isize); 8] = [
+                        (2, 1),
+                        (1, 2),
+                        (-1, 2),
+                        (-2, 1),
+                        (-2, -1),
+                        (-1, -2),
+                        (1, -2),
+                        (2, -1),
+                    ];
+                    for attack in &attacks {
+                        let rank = square.rank() as isize + attack.0;
+                        let file = square.file() as isize + attack.1;
+                        if RANK_RANGE.contains(&rank) && FILE_RANGE.contains(&file) {
+                            let attacked_field =
+                                BitBoard::from_rank_file(rank as usize, file as usize);
+                            check_status.danger |= attacked_field;
+                            if attacked_field.has_square(king) {
+                                check_status.checkers |= BitBoard::from_square(square);
+                                check_status.evation_mask |= BitBoard::from_square(square);
+                            }
+                        }
+                    }
+                }
+                PieceKind::Bishop => {
+                    let dir = [(1, 1), (-1, -1), (1, -1), (-1, 1)];
+                    self.evaluate_check_status_for_sliding_figures(
+                        &dir,
+                        square,
+                        color,
+                        &mut check_status,
+                    );
+                }
+                PieceKind::Rook => {
+                    let dir = [(1, 0), (0, 1), (-1, 0), (0, -1)];
+                    self.evaluate_check_status_for_sliding_figures(
+                        &dir,
+                        square,
+                        color,
+                        &mut check_status,
+                    );
+                }
+                PieceKind::Queen => {
+                    let dir = [
+                        (1, 0),
+                        (0, 1),
+                        (-1, 0),
+                        (0, -1),
+                        (1, 1),
+                        (-1, -1),
+                        (1, -1),
+                        (-1, 1),
+                    ];
+                    self.evaluate_check_status_for_sliding_figures(
+                        &dir,
+                        square,
+                        color,
+                        &mut check_status,
+                    );
+                }
+                PieceKind::King => {
+                    let attacks: [(isize, isize); 8] = [
+                        (1, 0),
+                        (0, 1),
+                        (-1, 0),
+                        (0, -1),
+                        (1, 1),
+                        (-1, -1),
+                        (1, -1),
+                        (-1, 1),
+                    ];
+                    for attack in &attacks {
+                        let r = square.rank() as isize + attack.0;
+                        let f = square.file() as isize + attack.1;
+                        if RANK_RANGE.contains(&r) && FILE_RANGE.contains(&f) {
+                            let attacked_field = BitBoard::from_rank_file(r as usize, f as usize);
+                            check_status.danger |= attacked_field;
+                            if attacked_field.has_square(king) {
+                                check_status.checkers |= BitBoard::from_square(square);
+                                check_status.evation_mask |= BitBoard::from_square(square);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        check_status
     }
 }
 
@@ -182,7 +326,7 @@ impl Board {
                     to: left_attack,
                     move_kind: MoveKind::Attack {
                         captured: self
-                            .piece_at_square(left_attack)
+                            .maybe_piece_at_square(left_attack)
                             .expect("Attacked piece should be present."),
                     },
                 })
@@ -201,7 +345,7 @@ impl Board {
                     to: right_attack,
                     move_kind: MoveKind::Attack {
                         captured: self
-                            .piece_at_square(right_attack)
+                            .maybe_piece_at_square(right_attack)
                             .expect("Attacked piece should be present."),
                     },
                 })
@@ -267,7 +411,7 @@ impl Board {
                         piece,
                         from,
                         left_attack,
-                        self.piece_at_square(left_attack),
+                        self.maybe_piece_at_square(left_attack),
                     );
                 };
             }
@@ -284,7 +428,7 @@ impl Board {
                     piece,
                     from,
                     right_attack,
-                    self.piece_at_square(right_attack),
+                    self.maybe_piece_at_square(right_attack),
                 );
             };
         }
@@ -321,7 +465,9 @@ impl Board {
                     from,
                     to: target,
                     move_kind: MoveKind::Attack {
-                        captured: self.piece_at_square(target).expect("Attacking a piece"),
+                        captured: self
+                            .maybe_piece_at_square(target)
+                            .expect("Attacking a piece"),
                     },
                 });
             } else if self.is_empty(target) {
@@ -357,7 +503,7 @@ impl Board {
                         to: current,
                         move_kind: MoveKind::Attack {
                             captured: self
-                                .piece_at_square(current)
+                                .maybe_piece_at_square(current)
                                 .expect("Attacking an enemy piece"),
                         },
                     });
@@ -373,6 +519,40 @@ impl Board {
                 r += rank_diff;
                 f += file_diff;
             }
+        }
+    }
+
+    /// Evaluates KingCheckStatus for sliding enemy figures: Rook, Bishop and Queen.
+    fn evaluate_check_status_for_sliding_figures(
+        &self,
+        directions: &[(isize, isize)],
+        enemy_square: Square,
+        king_color: Color,
+        check_status: &mut CheckStatus,
+    ) {
+        let king = self.find_king(king_color);
+        for (rank_diff, file_diff) in directions {
+            let mut r: isize = enemy_square.rank() as isize + rank_diff;
+            let mut f: isize = enemy_square.file() as isize + file_diff;
+            let mut dir_danger = BitBoard::new();
+
+            while RANK_RANGE.contains(&r) && FILE_RANGE.contains(&f) {
+                let current = Square::from_rank_file(r as usize, f as usize);
+                dir_danger |= BitBoard::from_square(current);
+                if current == king {
+                    // If king is attacked by an enemy piece, we've got a checker.
+                    check_status.checkers |= BitBoard::from_square(enemy_square);
+                    // Since this is a sliding attack, entire ray in between the enemy
+                    // and the king becomes an evasion mask, including the attacker itself
+                    check_status.evation_mask |= dir_danger | BitBoard::from_square(enemy_square);
+                }
+                if self.is_occupied(current) {
+                    break;
+                }
+                r += rank_diff;
+                f += file_diff;
+            }
+            check_status.danger |= dir_danger
         }
     }
 
@@ -456,7 +636,7 @@ impl Board {
                     to: square,
                     move_kind: MoveKind::Attack {
                         captured: self
-                            .piece_at_square(square)
+                            .maybe_piece_at_square(square)
                             .expect("Attacked piece has to be present."),
                     },
                 });
@@ -605,7 +785,7 @@ fn test_pawn_move_generation() {
 #[test]
 fn test_initial_moves_for_white() {
     let board: Board = Board::new();
-    let (result, _) = board.generate_moves(Color::White);
+    let result = board.generate_moves(Color::White);
     let expected = vec![
         Move {
             piece: Piece {
@@ -873,7 +1053,7 @@ fn test_simple_game() {
     ];
 
     for (ply, (from, to, expected_fen)) in game.into_iter().enumerate() {
-        let (generated, _) = board.generate_moves(board.turn());
+        let generated = board.generate_moves(board.turn());
         let selected = generated
             .into_iter()
             .find(|m| m.from == from && m.to == to)
@@ -905,7 +1085,7 @@ fn find_generated_move(
     to: Square,
     promotion: Option<PieceKind>,
 ) -> Move {
-    let (generated, _) = board.generate_moves(board.turn());
+    let generated = board.generate_moves(board.turn());
     generated
         .into_iter()
         .find(|m| {
@@ -929,8 +1109,137 @@ fn find_generated_move(
 }
 
 #[cfg(test)]
+fn find_generated_pawn_move(
+    board: &Board,
+    from: Square,
+    to: Square,
+    promotion: Option<PieceKind>,
+) -> Move {
+    let piece = board.piece_at_square(from);
+    assert_eq!(piece.kind, PieceKind::Pawn);
+
+    let mut generated = vec![];
+    board.generate_moves_for_pawn(&mut generated, from, piece.color);
+    generated
+        .into_iter()
+        .find(|m| {
+            m.to == to
+                && match (promotion, m.move_kind) {
+                    (Some(expected), MoveKind::Promotion { promoted_to, .. }) => {
+                        promoted_to == expected
+                    }
+                    (None, MoveKind::Promotion { .. }) => false,
+                    (None, _) => true,
+                    _ => false,
+                }
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "Expected generated pawn move {:?} -> {:?} with promotion {:?}",
+                from, to, promotion
+            )
+        })
+}
+
+#[cfg(test)]
 fn place_test_piece(board: &mut Board, square: Square, kind: PieceKind, color: Color) {
     board.set_piece_at_square(square, Piece { kind, color });
+}
+
+#[cfg(test)]
+fn bitboard_from_squares(squares: &[Square]) -> BitBoard {
+    let mut bitboard = BitBoard::new();
+    for &square in squares {
+        bitboard |= BitBoard::from_square(square);
+    }
+    bitboard
+}
+
+#[test]
+fn test_find_king_attackers_single_pawn_check() {
+    let mut board = Board::new_empty_board();
+    place_test_piece(&mut board, Square::E4, PieceKind::King, Color::White);
+    place_test_piece(&mut board, Square::D5, PieceKind::Pawn, Color::Black);
+    place_test_piece(&mut board, Square::H8, PieceKind::King, Color::Black);
+
+    let check_status = board.compute_check_status(Color::White);
+
+    assert_eq!(check_status.king, Square::E4);
+    assert_eq!(check_status.checkers, BitBoard::from_square(Square::D5));
+    assert_eq!(check_status.evation_mask, BitBoard::from_square(Square::D5));
+    assert!(check_status.danger.has_square(Square::E4));
+}
+
+#[test]
+fn test_find_king_attackers_single_sliding_piece_check() {
+    let cases = [
+        (
+            PieceKind::Bishop,
+            Square::B5,
+            Square::E2,
+            bitboard_from_squares(&[Square::B5, Square::C4, Square::D3, Square::E2]),
+        ),
+        (
+            PieceKind::Rook,
+            Square::E8,
+            Square::E1,
+            bitboard_from_squares(&[
+                Square::E8,
+                Square::E7,
+                Square::E6,
+                Square::E5,
+                Square::E4,
+                Square::E3,
+                Square::E2,
+                Square::E1,
+            ]),
+        ),
+        (
+            PieceKind::Queen,
+            Square::A4,
+            Square::E4,
+            bitboard_from_squares(&[Square::A4, Square::B4, Square::C4, Square::D4, Square::E4]),
+        ),
+    ];
+
+    for (attacker_kind, attacker_square, king_square, expected_evasion_mask) in cases {
+        let mut board = Board::new_empty_board();
+        place_test_piece(&mut board, king_square, PieceKind::King, Color::White);
+        place_test_piece(&mut board, attacker_square, attacker_kind, Color::Black);
+        place_test_piece(&mut board, Square::H8, PieceKind::King, Color::Black);
+
+        let check_status = board.compute_check_status(Color::White);
+
+        assert_eq!(check_status.king, king_square);
+        assert_eq!(
+            check_status.checkers,
+            BitBoard::from_square(attacker_square),
+            "expected {:?} on {:?} to check king on {:?}",
+            attacker_kind,
+            attacker_square,
+            king_square,
+        );
+        assert_eq!(check_status.evation_mask, expected_evasion_mask);
+        assert!(check_status.danger.has_square(king_square));
+    }
+}
+
+#[test]
+fn test_find_king_attackers_double_check() {
+    let mut board = Board::new_empty_board();
+    place_test_piece(&mut board, Square::E4, PieceKind::King, Color::White);
+    place_test_piece(&mut board, Square::E8, PieceKind::Rook, Color::Black);
+    place_test_piece(&mut board, Square::H1, PieceKind::Bishop, Color::Black);
+    place_test_piece(&mut board, Square::A8, PieceKind::King, Color::Black);
+
+    let check_status = board.compute_check_status(Color::White);
+
+    assert_eq!(check_status.king, Square::E4);
+    assert_eq!(
+        check_status.checkers,
+        bitboard_from_squares(&[Square::E8, Square::H1])
+    );
+    assert!(check_status.danger.has_square(Square::E4));
 }
 
 #[cfg(test)]
@@ -968,7 +1277,7 @@ fn assert_attack_state(case: AttackStateCase) {
         );
     }
 
-    let (_, king_safety) = board.generate_moves(defender);
+    let king_safety = board.compute_king_safety(defender);
 
     assert_eq!(king_safety.color, defender);
     assert_eq!(king_safety.king, case.defender_king_square);
@@ -1556,7 +1865,8 @@ fn test_promotion_generates_all_quiet_choices() {
     let mut board = Board::new_empty_board();
     place_test_piece(&mut board, Square::D7, PieceKind::Pawn, Color::White);
 
-    let (generated, _) = board.generate_moves(Color::White);
+    let mut generated = vec![];
+    board.generate_moves_for_pawn(&mut generated, Square::D7, Color::White);
     let expected = vec![
         Move {
             piece: Piece {
@@ -1618,7 +1928,8 @@ fn test_promotion_generates_all_left_capture_choices() {
     place_test_piece(&mut board, Square::D8, PieceKind::Rook, Color::White);
     place_test_piece(&mut board, Square::C8, PieceKind::Bishop, Color::Black);
 
-    let (generated, _) = board.generate_moves(Color::White);
+    let mut generated = vec![];
+    board.generate_moves_for_pawn(&mut generated, Square::D7, Color::White);
     let left_capture_promotions: Vec<Move> = generated
         .into_iter()
         .filter(|m| m.from == Square::D7 && m.to == Square::C8)
@@ -1697,7 +2008,8 @@ fn test_promotion_generates_all_right_capture_choices() {
     place_test_piece(&mut board, Square::D8, PieceKind::Rook, Color::White);
     place_test_piece(&mut board, Square::E8, PieceKind::Rook, Color::Black);
 
-    let (generated, _) = board.generate_moves(Color::White);
+    let mut generated = vec![];
+    board.generate_moves_for_pawn(&mut generated, Square::D7, Color::White);
     let right_capture_promotions: Vec<Move> = generated
         .into_iter()
         .filter(|m| m.from == Square::D7 && m.to == Square::E8)
@@ -1774,7 +2086,8 @@ fn test_quiet_promotion_to_knight() {
     let mut board = Board::new_empty_board();
     place_test_piece(&mut board, Square::D7, PieceKind::Pawn, Color::White);
 
-    let promotion = find_generated_move(&board, Square::D7, Square::D8, Some(PieceKind::Knight));
+    let promotion =
+        find_generated_pawn_move(&board, Square::D7, Square::D8, Some(PieceKind::Knight));
     board.make_move(&promotion);
 
     assert_eq!(board.serialize_to_fen(), "3N4/8/8/8/8/8/8/8");
@@ -1786,7 +2099,7 @@ fn test_capture_promotion_to_rook() {
     place_test_piece(&mut board, Square::D7, PieceKind::Pawn, Color::White);
     place_test_piece(&mut board, Square::C8, PieceKind::Bishop, Color::Black);
 
-    let promotion = find_generated_move(&board, Square::D7, Square::C8, Some(PieceKind::Rook));
+    let promotion = find_generated_pawn_move(&board, Square::D7, Square::C8, Some(PieceKind::Rook));
     board.make_move(&promotion);
 
     assert_eq!(board.serialize_to_fen(), "2R5/8/8/8/8/8/8/8");
@@ -1870,7 +2183,7 @@ fn test_castling_round_trip_white_king_side() {
     let mut board = castling_test_board();
 
     let original_fen = board.serialize_to_fen();
-    let (generated, _) = board.generate_moves(Color::White);
+    let generated = board.generate_moves(Color::White);
     let castle = generated
         .into_iter()
         .find(|m| m.from == Square::E1 && m.to == Square::G1)
@@ -1887,7 +2200,7 @@ fn test_castling_round_trip_white_queen_side() {
     let mut board = castling_test_board();
 
     let original_fen = board.serialize_to_fen();
-    let (generated, _) = board.generate_moves(Color::White);
+    let generated = board.generate_moves(Color::White);
     let castle = generated
         .into_iter()
         .find(|m| m.from == Square::E1 && m.to == Square::C1)
@@ -1904,7 +2217,7 @@ fn test_castling_round_trip_black_king_side() {
     let mut board = castling_test_board_black_to_move();
 
     let original_fen = board.serialize_to_fen();
-    let (generated, _) = board.generate_moves(Color::Black);
+    let generated = board.generate_moves(Color::Black);
     let castle = generated
         .into_iter()
         .find(|m| m.from == Square::E8 && m.to == Square::G8)
@@ -1921,7 +2234,7 @@ fn test_castling_round_trip_black_queen_side() {
     let mut board = castling_test_board_black_to_move();
 
     let original_fen = board.serialize_to_fen();
-    let (generated, _) = board.generate_moves(Color::Black);
+    let generated = board.generate_moves(Color::Black);
     let castle = generated
         .into_iter()
         .find(|m| m.from == Square::E8 && m.to == Square::C8)

@@ -1,5 +1,3 @@
 use crate::board::*;
 
-fn search() {
-    
-}
+fn search() {}

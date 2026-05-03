@@ -253,7 +253,7 @@ impl UiBoardState {
 
         for (rank, row) in squares.iter_mut().enumerate() {
             for (file, square) in row.iter_mut().enumerate() {
-                *square = board.piece_at(file, rank);
+                *square = board.maybe_piece_at(file, rank);
             }
         }
 

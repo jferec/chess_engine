@@ -8,6 +8,7 @@ use std::ops::BitOr;
 use std::ops::BitOrAssign;
 use std::ops::BitXor;
 use std::ops::BitXorAssign;
+use std::ops::Not;
 use std::vec;
 
 pub static MIN_LINK: usize = 0;
@@ -217,13 +218,27 @@ impl From<Square> for usize {
 pub struct BitBoard(pub u64);
 
 impl BitBoard {
+    pub const ZERO: Self = BitBoard(0);
+
+    pub fn new() -> Self {
+        BitBoard(0)
+    }
+
     pub fn from_square(square: Square) -> Self {
         Self(1u64 << square.index())
     }
 
-    /// Convert a `BitBoard` to a `Square`.  This grabs the least-significant `Square`
+    pub fn from_rank_file(rank: usize, file: usize) -> Self {
+        Self::from_square(Square::from_rank_file(rank, file))
+    }
+
+    /// Takes grabs the least-significant `Square`
     pub fn to_square(&self) -> Square {
-        unsafe { Square::from_index(self.0.trailing_zeros() as usize) }
+        Square::from_index(self.0.trailing_zeros() as usize)
+    }
+
+    pub fn has_square(&self, square: Square) -> bool {
+        1u64 << square.index() & self.0 != 0
     }
 }
 
@@ -269,6 +284,14 @@ impl BitOrAssign for BitBoard {
     }
 }
 
+impl Not for BitBoard {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        BitBoard(!self.0)
+    }
+}
+
 /// For the `BitBoard`, iterate over every `Square` set.
 impl Iterator for BitBoard {
     type Item = Square;
@@ -290,7 +313,7 @@ impl Iterator for BitBoard {
 /// pinned        = our pieces pinned to our king
 /// pin_ray[from] = squares a pinned piece is allowed to move to. only for pinned
 /// danger        = squares attacked by the enemy, for king moves
-/// evasion_mask  = squares that can block/capture a single check
+/// evasion_mask  = squares that can block/capture a single check (for non-king moves)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KingSafety {
     pub color: Color,
@@ -499,7 +522,7 @@ impl Serializer for Board {
                         empty_counter = 0;
                     }
                     encoded.push_str(
-                        self.piece_at_square(Square::from_rank_file(r, f))
+                        self.maybe_piece_at_square(Square::from_rank_file(r, f))
                             .expect("Piece must be present.")
                             .to_fen(),
                     );
@@ -587,36 +610,46 @@ impl Board {
             .collect()
     }
 
-    pub fn piece_at(&self, file: usize, rank: usize) -> Option<Piece> {
+    pub fn maybe_piece_at(&self, file: usize, rank: usize) -> Option<Piece> {
         self.squares[self.get_index(rank, file)]
     }
 
-    pub fn piece_at_square(&self, square: Square) -> Option<Piece> {
+    pub fn piece_at(&self, file: usize, rank: usize) -> Piece {
+        self.squares[self.get_index(rank, file)]
+            .expect("Piece must be present at rank:{rank} file:{file}")
+    }
+
+    pub fn maybe_piece_at_square(&self, square: Square) -> Option<Piece> {
         self.squares[square.index()]
     }
 
+    pub fn piece_at_square(&self, square: Square) -> Piece {
+        self.maybe_piece_at_square(square)
+            .unwrap_or_else(|| panic!("Piece must be present at square: {:?}", square))
+    }
+
     pub fn is_empty(&self, square: Square) -> bool {
-        self.piece_at_square(square).is_none()
+        self.maybe_piece_at_square(square).is_none()
     }
 
     pub fn is_occupied(&self, square: Square) -> bool {
-        self.piece_at_square(square).is_some()
+        self.maybe_piece_at_square(square).is_some()
     }
 
     pub fn is_occupied_by_enemy(&self, square: Square, color: Color) -> bool {
-        self.piece_at_square(square)
+        self.maybe_piece_at_square(square)
             .is_some_and(|f| f.color != color)
     }
 
     pub fn is_occupied_by_friend(&self, square: Square, color: Color) -> bool {
-        self.piece_at_square(square)
+        self.maybe_piece_at_square(square)
             .is_some_and(|f| f.color == color)
     }
 
     pub fn remove_piece_at_square(&mut self, square: Square) -> Piece {
         self.squares[square.index()]
             .take()
-            .expect("Piece must be present.")
+            .unwrap_or_else(|| panic!("Piece must be present at {:?}.", square))
     }
 
     pub fn set_piece_at_square(&mut self, square: Square, piece: Piece) {
@@ -732,26 +765,26 @@ fn test_board_initializes_pieces_correctly() {
 
     for (file, kind) in white_back_rank.into_iter().enumerate() {
         assert_eq!(
-            board.piece_at(file, 0),
+            board.maybe_piece_at(file, 0),
             Some(Piece::new(Color::White, kind)),
             "Expected white {:?} at file {}, rank 0",
             kind,
             file
         );
         assert_eq!(
-            board.piece_at(file, 1),
+            board.maybe_piece_at(file, 1),
             Some(Piece::new(Color::White, PieceKind::Pawn)),
             "Expected white pawn at file {}, rank 1",
             file
         );
         assert_eq!(
-            board.piece_at(file, 6),
+            board.maybe_piece_at(file, 6),
             Some(Piece::new(Color::Black, PieceKind::Pawn)),
             "Expected black pawn at file {}, rank 6",
             file
         );
         assert_eq!(
-            board.piece_at(file, 7),
+            board.maybe_piece_at(file, 7),
             Some(Piece::new(Color::Black, kind)),
             "Expected black {:?} at file {}, rank 7",
             kind,
@@ -762,7 +795,7 @@ fn test_board_initializes_pieces_correctly() {
     for rank in 2..6 {
         for file in 0..8 {
             assert_eq!(
-                board.piece_at(file, rank),
+                board.maybe_piece_at(file, rank),
                 None,
                 "Expected empty square at file {}, rank {}",
                 file,
